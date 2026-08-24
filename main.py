@@ -88,6 +88,12 @@ def main():
     ## Draw speed and distance
     speed_and_distance_estimator.draw_speed_and_distance(output_video_frames, tracks)
 
+    ## Draw Tactical 2D Pitch Map
+    for frame_num in range(len(output_video_frames)):
+        output_video_frames[frame_num] = view_transformer.draw_tactical_map(
+            output_video_frames[frame_num], tracks, frame_num
+        )
+
     #Save Video frames
     save_video(output_video_frames, 'output_videos/output_video.avi')
 
