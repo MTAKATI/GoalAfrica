@@ -11,6 +11,11 @@ from speed_and_distance_estimator import SpeedAndDistance_Estimator
 def main():
     #Read Video
     video_frames = read_video('input_videos/3.mp4')
+    print(f"Loaded {len(video_frames)} frames.")
+
+    if len(video_frames) == 0:
+        print("Error: could not read video! Check if 'input_videos/3.mp4' exists")
+        return
 
     #Initialise Tracker
     tracker = Tracker('models/best.pt')
@@ -30,18 +35,6 @@ def main():
     view_transformer = ViewTransformer()
     view_transformer.add_transformed_position_to_tracks(tracks)
 
-    # #save cropped image of a player
-    # for track_id, player in tracks['players'][0].items():
-    #     bbox = player['bbox']
-    #     frame = video_frames[0]
-
-    #     #crop bbox from frame
-    #     cropped_image = frame[int(bbox[1]):int(bbox[3]),int(bbox[0]):int(bbox[2])]
-
-    #     #save the cropped image
-    #     cv2.imwrite(f'output_videos/cropped_img.jpg', cropped_image)
-    #     break
-
     #Interpolate Ball Positions
     tracks["ball"] = tracker.interpolate_ball_position(tracks["ball"])
 
@@ -51,21 +44,12 @@ def main():
 
     # Assign Player Teams
     team_assigner = TeamAssigner()
-    team_assigner.assign_team_color(video_frames[0], tracks['players'][0])
-
-    #Dictionary to store the fixed team for each track_id
-    assigned_teams = {}
-
-    for frame_num, player_track in enumerate(tracks['players']):
-        for player_id, track in player_track.items():
-            if player_id not in assigned_teams:
-                team = team_assigner.get_player_team(video_frames[frame_num], track['bbox'], player_id)
-                assigned_teams[player_id] = team
-
-            # Use the stored team for all subsequent frames
-            team = assigned_teams[player_id]
-            tracks['players'][frame_num][player_id]['team'] = team
-            tracks['players'][frame_num][player_id]['team_color'] = team_assigner.team_colors[team]
+    
+    # 1. Train cluster on up to 100 frames
+    team_assigner.assign_team_colors(video_frames, tracks, sample_frames=100)
+    
+    # 2. Assign persistent teams using majority voting
+    team_assigner.assign_teams_by_majority_vote(video_frames, tracks)
 
     # Assign Ball to Player
     player_assigner = PlayerBallAssigner()

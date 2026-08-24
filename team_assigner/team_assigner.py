@@ -1,77 +1,95 @@
+import cv2
+import numpy as np
 from sklearn.cluster import KMeans
+from collections import defaultdict, Counter
 
 class TeamAssigner:
     def __init__(self):
         self.team_colors = {}
-        self.player_team_dict = {}
+        self.kmeans = None
 
-    def get_clustering_model(self, image):
-        # Reshape the image to a 2D array of pixels
-        image_2d = image.reshape(-1, 3)
+    def get_jersey_crop(self, frame, bbox):
+        x1, y1, x2, y2 = map(int, bbox)
+        height = y2 - y1
+        width = x2 - x1
+        
+        # Crop upper torso: skip head (top 15%), stop at waist (top 50%)
+        # Take central 60% horizontally to exclude background
+        y_start = y1 + int(height * 0.15)
+        y_end = y1 + int(height * 0.50)
+        x_start = x1 + int(width * 0.20)
+        x_end = x2 - int(width * 0.20)
+        
+        crop = frame[y_start:y_end, x_start:x_end]
+        return crop
 
-        # Apply K-means clustering to find the dominant colors with 2 clusters
-        kmeans = KMeans(n_clusters=2, init="k-means++", n_init=1)
-        kmeans.fit(image_2d)
+    def extract_dominant_color(self, crop):
+        if crop.size == 0 or crop.shape[0] == 0 or crop.shape[1] == 0:
+            return np.array([0, 0, 0])
+            
+        hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        
+        # Mask out green grass pixels in HSV
+        lower_green = np.array([35, 40, 40])
+        upper_green = np.array([85, 255, 255])
+        grass_mask = cv2.inRange(hsv_crop, lower_green, upper_green)
+        
+        non_grass_pixels = hsv_crop[grass_mask == 0]
+        
+        if len(non_grass_pixels) == 0:
+            non_grass_pixels = hsv_crop.reshape(-1, 3)
 
-        return kmeans
+        # Return median HSV color profile
+        return np.median(non_grass_pixels, axis=0)
 
-    def get_player_color(self, frame, bbox):
-        image = frame[int(bbox[1]):int(bbox[3]),int(bbox[0]):int(bbox[2])]
-
-        top_half_image = image[0:int(image.shape[0]/2),:]
-
-        # Take the middle 60% of the top half to focus on the jersey
-        height, width, _ = top_half_image.shape
-        margin = int(width * 0.2)
-        jersey_crop = top_half_image[:, margin:width-margin]
-
-        # Get Clustering model
-        kmeans = self.get_clustering_model(jersey_crop)
-
-        # Get the cluster labels for each pixel
-        labels = kmeans.labels_
-
-        # Reshape the labels to the image shape
-        clustered_image = labels.reshape(jersey_crop.shape[0], jersey_crop.shape[1])
-
-        # Get the player cluster based on the center pixels of the torso
-        mid_x, mid_y = clustered_image.shape[1]//2, clustered_image.shape[0]//2
-        player_cluster = clustered_image[mid_y, mid_x]
-
-        # corner_cluster = [clustered_image[0,0], clustered_image[0,-1],clustered_image[-1,0],clustered_image[-1,-1]]
-        # non_player_cluster = max(set(corner_cluster), key=corner_cluster.count)
-        # player_cluster = 1 - non_player_cluster
-
-        player_color = kmeans.cluster_centers_[player_cluster]
-
-        return player_color
-
-    def assign_team_color(self, frame, player_detection):
+    def assign_team_colors(self, video_frames, tracks, sample_frames=100):
         player_colors = []
-
-        for _, player_detection in player_detection.items():
-            bbox = player_detection['bbox']
-            player_color = self.get_player_color(frame, bbox)
-            player_colors.append(player_color)
         
-        kmeans = KMeans(n_clusters=2, init="k-means++", n_init=10)
-        kmeans.fit(player_colors)
+        # 1. Collect color samples across initial frames
+        num_frames = min(sample_frames, len(video_frames))
+        for frame_idx in range(num_frames):
+            frame = video_frames[frame_idx]
+            players = tracks['players'][frame_idx]
+            
+            for player_id, player in players.items():
+                crop = self.get_jersey_crop(frame, player['bbox'])
+                color = self.extract_dominant_color(crop)
+                player_colors.append(color)
+                
+        if not player_colors:
+            return
 
-        self.kmeans = kmeans
-
-        self.team_colors[1] = kmeans.cluster_centers_[0]
-        self.team_colors[2] = kmeans.cluster_centers_[1]
-
-    def get_player_team(self, frame, player_bbox, player_id):
-        if player_id in self.player_team_dict:
-            return self.player_team_dict[player_id]
+        # 2. Fit KMeans on HSV colors
+        self.kmeans = KMeans(n_clusters=2, init="k-means++", n_init=10)
+        self.kmeans.fit(player_colors)
         
-        player_color = self.get_player_color(frame, player_bbox)
+        # Store BGR color approximations for rendering
+        for i, center in enumerate(self.kmeans.cluster_centers_):
+            hsv_pixel = np.uint8([[center]])
+            bgr_pixel = cv2.cvtColor(hsv_pixel, cv2.COLOR_HSV2BGR)[0][0]
+            self.team_colors[i + 1] = (int(bgr_pixel[0]), int(bgr_pixel[1]), int(bgr_pixel[2]))
 
-        team_id = self.kmeans.predict(player_color.reshape(1,-1))[0]
-        team_id += 1
+    def assign_teams_by_majority_vote(self, video_frames, tracks):
+        player_votes = defaultdict(list)
 
-        self.player_team_dict[player_id] = team_id
+        # 1. Gather predictions for each player ID across all frames
+        for frame_num, player_dict in enumerate(tracks['players']):
+            frame = video_frames[frame_num]
+            for player_id, player in player_dict.items():
+                crop = self.get_jersey_crop(frame, player['bbox'])
+                color = self.extract_dominant_color(crop)
+                predicted_team = self.kmeans.predict([color])[0] + 1
+                player_votes[player_id].append(predicted_team)
 
-        return team_id
-    
+        # 2. Assign majority vote team per track ID
+        final_assignments = {}
+        for player_id, votes in player_votes.items():
+            most_common_team = Counter(votes).most_common(1)[0][0]
+            final_assignments[player_id] = most_common_team
+
+        # 3. Update main tracks dictionary
+        for frame_num, player_dict in enumerate(tracks['players']):
+            for player_id in player_dict:
+                team_id = final_assignments[player_id]
+                tracks['players'][frame_num][player_id]['team'] = team_id
+                tracks['players'][frame_num][player_id]['team_color'] = self.team_colors[team_id]
