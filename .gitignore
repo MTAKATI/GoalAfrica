@@ -1,0 +1,21 @@
+# Local media and generated analysis output
+input_videos/
+output_videos/
+runs/
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Local model weights
+*.pt
+*.onnx
+
+# Python environments, caches, and local tooling
+goalAfica/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
