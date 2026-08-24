@@ -39,8 +39,8 @@ def main():
     tracks["ball"] = tracker.interpolate_ball_position(tracks["ball"])
 
     # Speed and Distance Estimator
-    speed_and_distance_estimator = SpeedAndDistance_Estimator()
-    speed_and_distance_estimator.add_speed_and_distance_to_tracks(tracks)
+    speed_and_distance_estimator = SpeedAndDistance_Estimator(frame_rate=24, window_size=5)
+    speed_and_distance_estimator.calculate_speed_and_distance(tracks)
 
     # Assign Player Teams
     team_assigner = TeamAssigner()

@@ -1,57 +1,58 @@
 import sys
-sys.path.append('../')
-from utils import measure_distance, get_foot_position
+import numpy as np
 import cv2
+from utils import get_foot_position
 
 class SpeedAndDistance_Estimator():
-    def __init__(self):
-        self.frame_windows = 5
-        self.frame_rate = 24
+    def __init__(self, frame_rate=24, window_size=5):
+        self.frame_rate = frame_rate
+        self.frame_windows = window_size
 
-    def add_speed_and_distance_to_tracks(self,tracks):
-        total_distance = {}
-
-        for object, object_tracks in tracks.items():
-            if object == 'ball' or object =='referee':
+    def calculate_speed_and_distance(self, tracks):
+        for obj_type, object_tracks in tracks.items():
+            if obj_type in ['ball', 'referees', 'referee']:
                 continue
-            number_of_frames = len(object_tracks)
-            for frame_num in range(0,number_of_frames, self.frame_windows):
-                last_frame = min(frame_num + self.frame_windows, number_of_frames-1)
 
-                for track_id,_ in object_tracks[frame_num].items():
-                    if track_id not in object_tracks[last_frame]:
+            total_distances = {}
+
+            for frame_idx in range(0, len(object_tracks) - self.frame_windows, self.frame_windows):
+                future_idx = frame_idx + self.frame_windows
+
+                for track_id, track in object_tracks[frame_idx].items():
+                    if track_id not in object_tracks[future_idx]:
                         continue
 
-                    start_position = object_tracks[frame_num][track_id]['position_transformed']
-                    end_position = object_tracks[last_frame][track_id]['position_transformed']
+                    p1 = track.get('position_transformed')
+                    p2 = object_tracks[future_idx][track_id].get('position_transformed')
 
-                    if start_position is None or end_position is None:
+                    if p1 is None or p2 is None:
                         continue
 
-                    distance_covered = measure_distance(start_position, end_position)
-                    time_elapsed = (last_frame - frame_num) / self.frame_rate
-                    speed_meters_per_second = distance_covered / time_elapsed 
-                    speed_km_per_hour = speed_meters_per_second * 3.6
-
-                    if object not in total_distance:
-                        total_distance[object] = {}
-
-                    if track_id not in total_distance[object]:
-                        total_distance[object][track_id] = 0
+                    # Euclidean distance in meters
+                    distance_meters = np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+                    time_seconds = self.frame_windows / self.frame_rate
                     
-                    total_distance[object][track_id] += distance_covered
+                    speed_m_s = distance_meters / time_seconds
+                    speed_kmh = speed_m_s * 3.6
 
-                    for frame_num_batch in range(frame_num, last_frame):
-                        if track_id not in tracks[object][frame_num_batch]:
-                            continue
-                        tracks[object][frame_num_batch][track_id]['speed'] = speed_km_per_hour
-                        tracks[object][frame_num_batch][track_id]['distance'] = total_distance[object][track_id]
+                    # CALIBRATION: Cap realistic human sprinting speed (~36 km/h max)
+                    if speed_kmh > 36.0:
+                        continue
 
-    def draw_speed_and_distance(self,frames,tracks):
+                    # Accumulate distance
+                    total_distances[track_id] = total_distances.get(track_id, 0) + distance_meters
+
+                    # Apply smoothed speed and distance to frame range
+                    for f in range(frame_idx, future_idx):
+                        if track_id in object_tracks[f]:
+                            object_tracks[f][track_id]['speed'] = speed_kmh
+                            object_tracks[f][track_id]['distance'] = total_distances[track_id]
+
+    def draw_speed_and_distance(self, frames, tracks):
         output_frames = []
         for frame_num, frame in enumerate(frames):
             for object, object_tracks in tracks.items():
-                if object == 'ball' or object == 'referee':
+                if object == 'ball' or object == 'referees' or object == 'referee':
                     continue
                 for _, track_info in object_tracks[frame_num].items():
                     if "speed" in track_info:
@@ -67,7 +68,7 @@ class SpeedAndDistance_Estimator():
 
                         position = tuple(map(int, position))
                         cv2.putText(frame, f"{speed:.2f} km/h", position, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                        cv2.putText(frame, f"{distance:.2f} m", (position[0],position[1]+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                        cv2.putText(frame, f"{distance:.2f} m", (position[0], position[1] + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
             output_frames.append(frame)
 
         return output_frames
